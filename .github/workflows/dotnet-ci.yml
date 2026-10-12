@@ -32,3 +32,14 @@ jobs:
 
       - name: Run tests
         run: dotnet test ci-cd-demo/CiCdDemo.slnx --configuration Release --no-build
+
+      - name: Publish API
+        run: dotnet publish ci-cd-demo/CiCdDemo.Api/CiCdDemo.Api.csproj --configuration Release --no-build --output ./publish/CiCdDemo.Api
+
+      - name: Upload API artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cicd-demo-api
+          path: ./publish/CiCdDemo.Api/
+          if-no-files-found: error
+          retention-days: 7
