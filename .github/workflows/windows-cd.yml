@@ -10,6 +10,7 @@ permissions:
 jobs:
   build-test-deploy:
     runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
 
     steps:
       # 1. Checkout source code
@@ -51,13 +52,31 @@ jobs:
       - name: Deploy to local staging folder
         shell: cmd
         run: |
-          if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api" mkdir "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
-          robocopy "%RUNNER_TEMP%\CiCdDemo.Api" "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api" /E
+          set "SOURCE=%RUNNER_TEMP%\CiCdDemo.Api"
+          set "DEST=D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
+
+          if not exist "%SOURCE%\CiCdDemo.Api.dll" (
+            echo Published API DLL not found.
+            exit /b 1
+          )
+
+          if not exist "%DEST%" mkdir "%DEST%"
+
+          robocopy "%SOURCE%" "%DEST%" /E /R:2 /W:2
           set "RC=%ERRORLEVEL%"
           echo Robocopy exit code: %RC%
-          if %RC% GEQ 8 exit /b %RC%
-          if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
-          echo Deployment files copied and verified successfully
+
+          if %RC% GEQ 8 (
+            echo Staging file copy failed.
+            exit /b 1
+          )
+
+          if not exist "%DEST%\CiCdDemo.Api.dll" (
+            echo Deployed API DLL not found.
+            exit /b 1
+          )
+
+          echo Deployment files copied and verified successfully.
           exit /b 0
 
       # 8. Verify staging API health
@@ -69,7 +88,8 @@ jobs:
 
           netstat -ano | findstr ":5057" | findstr "LISTENING" >nul
           if not errorlevel 1 (
-            echo Port 5057 is already in use. Stopping to avoid affecting another process.
+            echo Port 5057 is already in use.
+            echo Stop to avoid affecting another process.
             exit /b 1
           )
 
@@ -96,7 +116,11 @@ jobs:
       - name: Verify deployment files
         shell: cmd
         run: |
-          if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
-          if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api\CiCdDemo.Api.deps.json" exit /b 1
+          set "DEST=D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
+
+          if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
+          if not exist "%DEST%\CiCdDemo.Api.deps.json" exit /b 1
+
           echo Staging deployment files verified successfully.
           exit /b 0
+
