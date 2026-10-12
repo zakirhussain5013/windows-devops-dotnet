@@ -12,7 +12,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
 
     steps:
-      # 1. Get source code
+      # 1. Checkout source code
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -60,3 +60,43 @@ jobs:
           echo Deployment files copied and verified successfully
           exit /b 0
 
+      # 8. Verify staging API health
+      - name: Verify staging API health
+        shell: cmd
+        run: |
+          set "STAGING_DIR=D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
+          set "HEALTH_LOG=%RUNNER_TEMP%\CiCdDemo-health-check.log"
+
+          netstat -ano | findstr ":5057" | findstr "LISTENING" >nul
+          if not errorlevel 1 (
+            echo Port 5057 is already in use. Stopping to avoid affecting another process.
+            exit /b 1
+          )
+
+          if exist "%HEALTH_LOG%" del "%HEALTH_LOG%"
+
+          start "" /B cmd /c ""dotnet" "%STAGING_DIR%\CiCdDemo.Api.dll" --urls http://localhost:5057 > "%HEALTH_LOG%" 2>&1"
+
+          curl --retry 10 --retry-delay 2 --retry-connrefused --fail --silent --show-error http://localhost:5057/health
+          set "HEALTH_RC=%ERRORLEVEL%"
+
+          for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5057" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
+
+          if not "%HEALTH_RC%"=="0" (
+            echo Staging API health check failed.
+            if exist "%HEALTH_LOG%" type "%HEALTH_LOG%"
+            exit /b 1
+          )
+
+          echo.
+          echo Staging API health check passed.
+          exit /b 0
+
+      # 9. Verify deployment files
+      - name: Verify deployment files
+        shell: cmd
+        run: |
+          if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
+          if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api\CiCdDemo.Api.deps.json" exit /b 1
+          echo Staging deployment files verified successfully.
+          exit /b 0
