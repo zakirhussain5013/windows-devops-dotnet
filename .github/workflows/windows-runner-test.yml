@@ -1,0 +1,38 @@
+name: Windows Self-Hosted Runner Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-windows-runner:
+    runs-on: [self-hosted, Windows, X64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Windows environment
+        shell: cmd
+        run: |
+          echo Windows runner is working
+          ver
+          whoami
+
+      - name: Check Git
+        shell: cmd
+        run: git --version
+
+      - name: Check .NET SDK
+        shell: cmd
+        run: dotnet --version
+
+      - name: Check project files
+        shell: cmd
+        run: |
+          cd /d "%GITHUB_WORKSPACE%"
+          dir
+          if not exist "ci-cd-demo\CiCdDemo.slnx" exit /b 1
+          echo Solution file found successfully
