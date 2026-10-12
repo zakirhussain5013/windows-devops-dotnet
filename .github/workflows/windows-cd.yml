@@ -1,0 +1,46 @@
+name: Windows .NET CD
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-deploy:
+    runs-on: [self-hosted, Windows, X64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check .NET SDK
+        shell: cmd
+        run: dotnet --version
+
+      - name: Restore dependencies
+        shell: cmd
+        run: dotnet restore ci-cd-demo\CiCdDemo.slnx
+
+      - name: Build solution
+        shell: cmd
+        run: dotnet build ci-cd-demo\CiCdDemo.slnx --configuration Release --no-restore
+
+      - name: Run tests
+        shell: cmd
+        run: dotnet test ci-cd-demo\CiCdDemo.slnx --configuration Release --no-build
+
+      - name: Publish API
+        shell: cmd
+        run: |
+          if exist "%RUNNER_TEMP%\CiCdDemo.Api" rmdir /s /q "%RUNNER_TEMP%\CiCdDemo.Api"
+          dotnet publish ci-cd-demo\CiCdDemo.Api\CiCdDemo.Api.csproj --configuration Release --no-build --output "%RUNNER_TEMP%\CiCdDemo.Api"
+
+      - name: Deploy to local staging folder
+        shell: cmd
+        run: |
+          if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api" mkdir "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
+          robocopy "%RUNNER_TEMP%\CiCdDemo.Api" "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api" /E
+          if errorlevel 8 exit /b 1
+          if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
+          echo Deployment files copied and verified successfully
