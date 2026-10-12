@@ -1,3 +1,4 @@
+
 name: Windows .NET CD
 
 on:
@@ -11,36 +12,51 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
 
     steps:
+      # 1. Get source code
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Check .NET SDK
       - name: Check .NET SDK
         shell: cmd
         run: dotnet --version
 
+      # 3. Restore dependencies
       - name: Restore dependencies
         shell: cmd
         run: dotnet restore ci-cd-demo\CiCdDemo.slnx
 
+      # 4. Build solution
       - name: Build solution
         shell: cmd
         run: dotnet build ci-cd-demo\CiCdDemo.slnx --configuration Release --no-restore
 
+      # 5. Run tests
       - name: Run tests
         shell: cmd
         run: dotnet test ci-cd-demo\CiCdDemo.slnx --configuration Release --no-build
 
+      # 6. Publish API
       - name: Publish API
         shell: cmd
         run: |
           if exist "%RUNNER_TEMP%\CiCdDemo.Api" rmdir /s /q "%RUNNER_TEMP%\CiCdDemo.Api"
           dotnet publish ci-cd-demo\CiCdDemo.Api\CiCdDemo.Api.csproj --configuration Release --no-build --output "%RUNNER_TEMP%\CiCdDemo.Api"
+          if errorlevel 1 exit /b 1
+          if not exist "%RUNNER_TEMP%\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
+          echo API published successfully
+          exit /b 0
 
+      # 7. Deploy to local staging folder
       - name: Deploy to local staging folder
         shell: cmd
         run: |
           if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api" mkdir "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
           robocopy "%RUNNER_TEMP%\CiCdDemo.Api" "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api" /E
-          if errorlevel 8 exit /b 1
+          set "RC=%ERRORLEVEL%"
+          echo Robocopy exit code: %RC%
+          if %RC% GEQ 8 exit /b %RC%
           if not exist "D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
           echo Deployment files copied and verified successfully
+          exit /b 0
+
