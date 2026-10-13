@@ -33,6 +33,10 @@ app.MapGet("/weatherforecast", () =>
 })
 .WithName("GetWeatherForecast");
 app.MapHealthChecks("/health");
+app.MapGet("/version", () => Results.Ok(new
+{
+    Version = "2.0.0"
+}));
 app.Run();
 
 record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
