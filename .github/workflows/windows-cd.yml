@@ -13,31 +13,25 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # 1. Checkout source code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Check .NET SDK
       - name: Check .NET SDK
         shell: cmd
         run: dotnet --version
 
-      # 3. Restore dependencies
       - name: Restore dependencies
         shell: cmd
         run: dotnet restore ci-cd-demo\CiCdDemo.slnx
 
-      # 4. Build solution
       - name: Build solution
         shell: cmd
         run: dotnet build ci-cd-demo\CiCdDemo.slnx --configuration Release --no-restore
 
-      # 5. Run tests
       - name: Run tests
         shell: cmd
         run: dotnet test ci-cd-demo\CiCdDemo.slnx --configuration Release --no-build
 
-      # 6. Publish API
       - name: Publish API
         shell: cmd
         run: |
@@ -46,81 +40,140 @@ jobs:
           if errorlevel 1 exit /b 1
           if not exist "%RUNNER_TEMP%\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
           echo API published successfully
-          exit /b 0
 
-      # 7. Deploy to local staging folder
-      - name: Deploy to local staging folder
+      - name: Backup current IIS staging files
+        id: backup
+        shell: cmd
+        run: |
+          set "DEST=C:\inetpub\DevOpsApi-Staging"
+          set "BACKUP=%RUNNER_TEMP%\CiCdDemo-Staging-Backup-${{ github.run_id }}"
+
+          if not exist "%DEST%\CiCdDemo.Api.dll" (
+            echo Current staging API files not found. Refusing deployment.
+            exit /b 1
+          )
+
+          if exist "%BACKUP%" rmdir /s /q "%BACKUP%"
+          mkdir "%BACKUP%"
+          if errorlevel 1 exit /b 1
+
+          robocopy "%DEST%" "%BACKUP%" /E /COPY:DAT /R:2 /W:2
+          set "RC=%ERRORLEVEL%"
+          echo Backup robocopy exit code: %RC%
+          if %RC% GEQ 8 exit /b 1
+
+          if not exist "%BACKUP%\CiCdDemo.Api.dll" (
+            echo Backup verification failed.
+            exit /b 1
+          )
+
+          rem Keep IIS offline while the previous files are restored.
+          echo Staging rollback marker>"%BACKUP%\app_offline.htm"
+          echo Staging backup completed.
+
+      - name: Deploy to IIS staging
         shell: cmd
         run: |
           set "SOURCE=%RUNNER_TEMP%\CiCdDemo.Api"
-          set "DEST=D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
+          set "DEST=C:\inetpub\DevOpsApi-Staging"
 
-          if not exist "%SOURCE%\CiCdDemo.Api.dll" (
-            echo Published API DLL not found.
-            exit /b 1
-          )
+          if not exist "%SOURCE%\CiCdDemo.Api.dll" exit /b 1
+          if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
 
-          if not exist "%DEST%" mkdir "%DEST%"
+          rem ASP.NET Core Module shuts down the staging application.
+          echo Deployment in progress>"%DEST%\app_offline.htm"
+          timeout /t 3 /nobreak >nul
 
-          robocopy "%SOURCE%" "%DEST%" /E /R:2 /W:2
+          rem Include the offline marker during synchronization.
+          echo Deployment in progress>"%SOURCE%\app_offline.htm"
+
+          robocopy "%SOURCE%" "%DEST%" /MIR /COPY:DAT /R:2 /W:2
           set "RC=%ERRORLEVEL%"
-          echo Robocopy exit code: %RC%
+          echo Deployment robocopy exit code: %RC%
 
           if %RC% GEQ 8 (
-            echo Staging file copy failed.
+            echo Staging file synchronization failed.
             exit /b 1
           )
-
-          if not exist "%DEST%\CiCdDemo.Api.dll" (
-            echo Deployed API DLL not found.
-            exit /b 1
-          )
-
-          echo Deployment files copied and verified successfully.
-          exit /b 0
-
-      # 8. Verify staging API health
-      - name: Verify staging API health
-        shell: cmd
-        run: |
-          set "STAGING_DIR=D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
-          set "HEALTH_LOG=%RUNNER_TEMP%\CiCdDemo-health-check.log"
-
-          netstat -ano | findstr ":5057" | findstr "LISTENING" >nul
-          if not errorlevel 1 (
-            echo Port 5057 is already in use.
-            echo Stop to avoid affecting another process.
-            exit /b 1
-          )
-
-          if exist "%HEALTH_LOG%" del "%HEALTH_LOG%"
-
-          start "" /B cmd /c ""dotnet" "%STAGING_DIR%\CiCdDemo.Api.dll" --urls http://localhost:5057 > "%HEALTH_LOG%" 2>&1"
-
-          curl --retry 10 --retry-delay 2 --retry-connrefused --fail --silent --show-error http://localhost:5057/health
-          set "HEALTH_RC=%ERRORLEVEL%"
-
-          for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5057" ^| findstr "LISTENING"') do taskkill /PID %%P /F >nul 2>&1
-
-          if not "%HEALTH_RC%"=="0" (
-            echo Staging API health check failed.
-            if exist "%HEALTH_LOG%" type "%HEALTH_LOG%"
-            exit /b 1
-          )
-
-          echo.
-          echo Staging API health check passed.
-          exit /b 0
-
-      # 9. Verify deployment files
-      - name: Verify deployment files
-        shell: cmd
-        run: |
-          set "DEST=D:\DevOps_Learning\deploy-candidate\CiCdDemo.Api"
 
           if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
           if not exist "%DEST%\CiCdDemo.Api.deps.json" exit /b 1
 
-          echo Staging deployment files verified successfully.
-          exit /b 0
+          del /q "%SOURCE%\app_offline.htm"
+          del /q "%DEST%\app_offline.htm"
 
+          echo IIS staging files deployed.
+
+      - name: Verify IIS staging health and version
+        shell: cmd
+        run: |
+          set "HEALTH_URL=http://127.0.0.1:5071/health"
+          set "VERSION_URL=http://127.0.0.1:5071/version"
+          set "VERSION_FILE=%RUNNER_TEMP%\CiCdDemo-version-${{ github.run_id }}.json"
+
+          curl.exe --retry 10 --retry-delay 2 --retry-connrefused --fail --silent --show-error "%HEALTH_URL%"
+          if errorlevel 1 (
+            echo IIS staging health check failed.
+            exit /b 1
+          )
+
+          echo.
+          curl.exe --retry 10 --retry-delay 2 --retry-connrefused --fail --silent --show-error "%VERSION_URL%" -o "%VERSION_FILE%"
+          if errorlevel 1 (
+            echo IIS staging version endpoint failed.
+            exit /b 1
+          )
+
+          type "%VERSION_FILE%"
+          findstr /i "version" "%VERSION_FILE%" >nul
+          if errorlevel 1 (
+            echo Version response did not contain a version field.
+            exit /b 1
+          )
+
+          echo.
+          echo IIS staging health and version checks passed.
+
+      - name: Verify deployed files
+        shell: cmd
+        run: |
+          set "DEST=C:\inetpub\DevOpsApi-Staging"
+
+          if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
+          if not exist "%DEST%\CiCdDemo.Api.deps.json" exit /b 1
+          if exist "%DEST%\app_offline.htm" (
+            echo Unexpected app_offline.htm remains in staging.
+            exit /b 1
+          )
+
+          echo IIS staging deployment verified.
+
+      - name: Roll back staging after failure
+        if: ${{ failure() && steps.backup.outcome == 'success' }}
+        shell: cmd
+        run: |
+          set "DEST=C:\inetpub\DevOpsApi-Staging"
+          set "BACKUP=%RUNNER_TEMP%\CiCdDemo-Staging-Backup-${{ github.run_id }}"
+
+          if not exist "%BACKUP%\CiCdDemo.Api.dll" (
+            echo Backup files are missing. Manual recovery is required.
+            exit /b 1
+          )
+
+          rem Keep the application offline during restoration.
+          echo Rollback in progress>"%DEST%\app_offline.htm"
+          timeout /t 3 /nobreak >nul
+
+          robocopy "%BACKUP%" "%DEST%" /MIR /COPY:DAT /R:2 /W:2
+          set "RC=%ERRORLEVEL%"
+          echo Rollback robocopy exit code: %RC%
+
+          if %RC% GEQ 8 (
+            echo Staging rollback failed. Manual recovery is required.
+            exit /b 1
+          )
+
+          if exist "%DEST%\app_offline.htm" del /q "%DEST%\app_offline.htm"
+
+          echo Previous staging files restored.
+          echo The failed deployment remains marked as failed.
