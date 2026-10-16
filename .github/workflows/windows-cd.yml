@@ -2,45 +2,111 @@
 name: Windows .NET CD
 
 on:
+  workflow_run:
+    workflows: [".NET CI"]
+    types:
+      - completed
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: windows-iis-staging-deployment
+  cancel-in-progress: false
 
 jobs:
   build-test-deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main'
+      )
+
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Check .NET SDK
-        shell: cmd
-        run: dotnet --version
-
-      - name: Restore dependencies
-        shell: cmd
-        run: dotnet restore ci-cd-demo\CiCdDemo.slnx
-
-      - name: Build solution
-        shell: cmd
-        run: dotnet build ci-cd-demo\CiCdDemo.slnx --configuration Release --no-restore
-
-      - name: Run tests
-        shell: cmd
-        run: dotnet test ci-cd-demo\CiCdDemo.slnx --configuration Release --no-build
-
-      - name: Publish API
+      # Prepare a clean deployment directory for either trigger.
+      - name: Prepare deployment directory
         shell: cmd
         run: |
           if exist "%RUNNER_TEMP%\CiCdDemo.Api" rmdir /s /q "%RUNNER_TEMP%\CiCdDemo.Api"
+          mkdir "%RUNNER_TEMP%\CiCdDemo.Api"
+          if errorlevel 1 exit /b 1
+
+      # Manual deployment: checkout and build locally on the runner.
+      - name: Checkout repository for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+
+      - name: Check .NET SDK for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        shell: cmd
+        run: dotnet --version
+
+      - name: Restore dependencies for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        shell: cmd
+        run: dotnet restore ci-cd-demo\CiCdDemo.slnx
+
+      - name: Build solution for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        shell: cmd
+        run: dotnet build ci-cd-demo\CiCdDemo.slnx --configuration Release --no-restore
+
+      - name: Run tests for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        shell: cmd
+        run: dotnet test ci-cd-demo\CiCdDemo.slnx --configuration Release --no-build
+
+      - name: Publish API for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        shell: cmd
+        run: |
           dotnet publish ci-cd-demo\CiCdDemo.Api\CiCdDemo.Api.csproj --configuration Release --no-build --output "%RUNNER_TEMP%\CiCdDemo.Api"
           if errorlevel 1 exit /b 1
           if not exist "%RUNNER_TEMP%\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
-          echo API published successfully
+          echo Manual deployment package published successfully.
 
+      # Automatic deployment: download the artifact from the successful .NET CI run.
+      - name: Download artifact from successful CI run
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: cicd-demo-api
+          path: ${{ runner.temp }}\CiCdDemo.Api
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify deployment package
+        shell: cmd
+        run: |
+          set "SOURCE=%RUNNER_TEMP%\CiCdDemo.Api"
+
+          if not exist "%SOURCE%\CiCdDemo.Api.dll" (
+            echo API DLL not found in deployment package.
+            exit /b 1
+          )
+
+          if not exist "%SOURCE%\CiCdDemo.Api.deps.json" (
+            echo API dependency manifest not found.
+            exit /b 1
+          )
+
+          if not exist "%SOURCE%\web.config" (
+            echo IIS web.config not found in deployment package.
+            exit /b 1
+          )
+
+          echo Deployment package verified successfully.
+
+      # Back up current staging files before changing anything.
       - name: Backup current IIS staging files
         id: backup
         shell: cmd
@@ -60,6 +126,7 @@ jobs:
           robocopy "%DEST%" "%BACKUP%" /E /COPY:DAT /R:2 /W:2
           set "RC=%ERRORLEVEL%"
           echo Backup robocopy exit code: %RC%
+
           if %RC% GEQ 8 exit /b 1
 
           if not exist "%BACKUP%\CiCdDemo.Api.dll" (
@@ -67,10 +134,11 @@ jobs:
             exit /b 1
           )
 
-          rem Keep IIS offline while the previous files are restored.
-          echo Staging rollback marker>"%BACKUP%\app_offline.htm"
-          echo Staging backup completed.
+          echo Rollback in progress>"%BACKUP%\app_offline.htm"
 
+          echo Staging backup completed successfully.
+
+      # Deploy only to IIS Staging.
       - name: Deploy to IIS staging
         shell: cmd
         run: |
@@ -80,11 +148,9 @@ jobs:
           if not exist "%SOURCE%\CiCdDemo.Api.dll" exit /b 1
           if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
 
-          rem ASP.NET Core Module shuts down the staging application.
           echo Deployment in progress>"%DEST%\app_offline.htm"
           timeout /t 3 /nobreak >nul
 
-          rem Include the offline marker during synchronization.
           echo Deployment in progress>"%SOURCE%\app_offline.htm"
 
           robocopy "%SOURCE%" "%DEST%" /MIR /COPY:DAT /R:2 /W:2
@@ -99,14 +165,21 @@ jobs:
           if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
           if not exist "%DEST%\CiCdDemo.Api.deps.json" exit /b 1
 
-          del /q "%SOURCE%\app_offline.htm"
-          del /q "%DEST%\app_offline.htm"
+          if exist "%SOURCE%\app_offline.htm" del /q "%SOURCE%\app_offline.htm"
+          if exist "%DEST%\app_offline.htm" del /q "%DEST%\app_offline.htm"
+
+          if exist "%DEST%\app_offline.htm" (
+            echo Could not remove app_offline.htm.
+            exit /b 1
+          )
 
           echo IIS staging files deployed.
 
+      # Check that the deployed application responds.
       - name: Verify IIS staging health and version
         shell: cmd
         run: |
+          set "DEST=C:\inetpub\DevOpsApi-Staging"
           set "HEALTH_URL=http://127.0.0.1:5071/health"
           set "VERSION_URL=http://127.0.0.1:5071/version"
           set "VERSION_FILE=%RUNNER_TEMP%\CiCdDemo-version-${{ github.run_id }}.json"
@@ -124,30 +197,24 @@ jobs:
             exit /b 1
           )
 
+          echo.
           type "%VERSION_FILE%"
+
           findstr /i "version" "%VERSION_FILE%" >nul
           if errorlevel 1 (
             echo Version response did not contain a version field.
             exit /b 1
           )
 
-          echo.
-          echo IIS staging health and version checks passed.
-
-      - name: Verify deployed files
-        shell: cmd
-        run: |
-          set "DEST=C:\inetpub\DevOpsApi-Staging"
-
-          if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
-          if not exist "%DEST%\CiCdDemo.Api.deps.json" exit /b 1
           if exist "%DEST%\app_offline.htm" (
             echo Unexpected app_offline.htm remains in staging.
             exit /b 1
           )
 
-          echo IIS staging deployment verified.
+          echo.
+          echo IIS staging health and version checks passed.
 
+      # Restore the previous staging files if a deployment or verification step fails.
       - name: Roll back staging after failure
         if: ${{ failure() && steps.backup.outcome == 'success' }}
         shell: cmd
@@ -160,7 +227,6 @@ jobs:
             exit /b 1
           )
 
-          rem Keep the application offline during restoration.
           echo Rollback in progress>"%DEST%\app_offline.htm"
           timeout /t 3 /nobreak >nul
 
@@ -175,5 +241,10 @@ jobs:
 
           if exist "%DEST%\app_offline.htm" del /q "%DEST%\app_offline.htm"
 
+          if exist "%DEST%\app_offline.htm" (
+            echo Could not remove app_offline.htm after rollback.
+            exit /b 1
+          )
+
           echo Previous staging files restored.
-          echo The failed deployment remains marked as failed.
+          echo Deployment remains failed; verify restored staging health manually.
