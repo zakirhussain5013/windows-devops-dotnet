@@ -1,6 +1,10 @@
+
 name: Windows Self-Hosted Runner Test
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -9,6 +13,7 @@ permissions:
 jobs:
   test-windows-runner:
     runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
