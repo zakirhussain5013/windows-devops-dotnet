@@ -33,7 +33,7 @@ jobs:
 
     defaults:
       run:
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
 
     env:
       STAGING_PATH: C:\inetpub\DevOpsApi-Staging
