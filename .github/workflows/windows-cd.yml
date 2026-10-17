@@ -82,8 +82,11 @@ jobs:
             --no-restore `
             --output $publishPath
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "dotnet publish failed with exit code $LASTEXITCODE"
+          $rc = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+
+          if ($rc -ne 0) {
+            throw "dotnet publish failed with exit code $rc"
           }
 
       - name: Download successful CI artifact
@@ -150,14 +153,14 @@ jobs:
         id: backup
         run: |
           $ErrorActionPreference = 'Stop'
-
           $backupPath = Join-Path $env:BACKUP_ROOT "CiCdDemo-Staging-Backup-$env:GITHUB_RUN_ID"
 
           New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
 
           robocopy $env:STAGING_PATH $backupPath /E /COPY:DAT /R:2 /W:2
-
           $rc = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+
           Write-Host "Backup robocopy exit code: $rc"
 
           if ($rc -ge 8) {
@@ -171,7 +174,6 @@ jobs:
           }
 
           "backup_path=$backupPath" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
-
           Write-Host "Verified staging backup: $backupPath"
 
       - name: Deploy package to IIS staging
@@ -198,8 +200,9 @@ jobs:
             $sourceMarkerCreated = $true
 
             robocopy $source $destination /MIR /COPY:DAT /R:2 /W:2
-
             $rc = $LASTEXITCODE
+            $global:LASTEXITCODE = 0
+
             Write-Host "Deployment robocopy exit code: $rc"
 
             if ($rc -ge 8) {
@@ -233,10 +236,8 @@ jobs:
         if: steps.deploy.outcome == 'success'
         run: |
           $ErrorActionPreference = 'Stop'
-
           $healthUri = "$env:STAGING_URL/health"
           $versionUri = "$env:STAGING_URL/version"
-
           $healthy = $false
 
           for ($attempt = 1; $attempt -le 6; $attempt++) {
@@ -265,15 +266,17 @@ jobs:
             throw 'Staging version endpoint did not return a version value.'
           }
 
-          Write-Host "Staging health: Healthy"
+          Write-Host 'Staging health: Healthy'
           Write-Host "Staging version: $($version.version)"
 
       - name: Roll back staging after deployment failure
         if: ${{ failure() && steps.backup.outcome == 'success' }}
+        env:
+          BACKUP_PATH: ${{ steps.backup.outputs.backup_path }}
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $backupPath = "${{ steps.backup.outputs.backup_path }}"
+          $backupPath = $env:BACKUP_PATH
           $destination = $env:STAGING_PATH
           $restorePath = Join-Path $env:RUNNER_TEMP "CiCdDemo-Staging-Restore-$env:GITHUB_RUN_ID"
           $destinationMarker = Join-Path $destination 'app_offline.htm'
@@ -296,8 +299,9 @@ jobs:
           New-Item -ItemType Directory -Path $restorePath -Force | Out-Null
 
           robocopy $backupPath $restorePath /E /COPY:DAT /R:2 /W:2
-
           $rc = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+
           Write-Host "Restore preparation robocopy exit code: $rc"
 
           if ($rc -ge 8) {
@@ -311,8 +315,9 @@ jobs:
             Start-Sleep -Seconds 3
 
             robocopy $restorePath $destination /MIR /COPY:DAT /R:2 /W:2
-
             $rc = $LASTEXITCODE
+            $global:LASTEXITCODE = 0
+
             Write-Host "Rollback robocopy exit code: $rc"
 
             if ($rc -ge 8) {
