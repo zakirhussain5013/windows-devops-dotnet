@@ -32,7 +32,6 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # Prepare a clean deployment directory for either trigger.
       - name: Prepare deployment directory
         shell: cmd
         run: |
@@ -40,7 +39,6 @@ jobs:
           mkdir "%RUNNER_TEMP%\CiCdDemo.Api"
           if errorlevel 1 exit /b 1
 
-      # Manual deployment: checkout and build locally on the runner.
       - name: Checkout repository for manual deployment
         if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
@@ -74,7 +72,6 @@ jobs:
           if not exist "%RUNNER_TEMP%\CiCdDemo.Api\CiCdDemo.Api.dll" exit /b 1
           echo Manual deployment package published successfully.
 
-      # Automatic deployment: download the artifact from the successful .NET CI run.
       - name: Download artifact from successful CI run
         if: github.event_name == 'workflow_run'
         uses: actions/download-artifact@v4
@@ -106,20 +103,35 @@ jobs:
 
           echo Deployment package verified successfully.
 
-      # Back up current staging files before changing anything.
       - name: Backup current IIS staging files
         id: backup
         shell: cmd
         run: |
           set "DEST=C:\inetpub\DevOpsApi-Staging"
-          set "BACKUP=%RUNNER_TEMP%\CiCdDemo-Staging-Backup-${{ github.run_id }}"
+          set "BACKUP_ROOT=C:\inetpub\DevOpsApi-Staging-Backups"
+          set "BACKUP=%BACKUP_ROOT%\CiCdDemo-Staging-Backup-${{ github.run_id }}"
 
           if not exist "%DEST%\CiCdDemo.Api.dll" (
             echo Current staging API files not found. Refusing deployment.
             exit /b 1
           )
 
-          if exist "%BACKUP%" rmdir /s /q "%BACKUP%"
+          if exist "%DEST%\app_offline.htm" (
+            echo Staging already has app_offline.htm.
+            echo Inspect staging before starting another deployment.
+            exit /b 1
+          )
+
+          if not exist "%BACKUP_ROOT%" (
+            echo Permanent backup directory is missing.
+            exit /b 1
+          )
+
+          if exist "%BACKUP%" (
+            echo Backup directory already exists. Refusing to overwrite it.
+            exit /b 1
+          )
+
           mkdir "%BACKUP%"
           if errorlevel 1 exit /b 1
 
@@ -127,18 +139,24 @@ jobs:
           set "RC=%ERRORLEVEL%"
           echo Backup robocopy exit code: %RC%
 
-          if %RC% GEQ 8 exit /b 1
+          if %RC% GEQ 8 (
+            echo Backup copy failed.
+            exit /b 1
+          )
 
           if not exist "%BACKUP%\CiCdDemo.Api.dll" (
             echo Backup verification failed.
             exit /b 1
           )
 
-          echo Rollback in progress>"%BACKUP%\app_offline.htm"
+          if not exist "%BACKUP%\web.config" (
+            echo Backup web.config verification failed.
+            exit /b 1
+          )
 
-          echo Staging backup completed successfully.
+          echo Permanent staging backup completed:
+          echo %BACKUP%
 
-      # Deploy only to IIS Staging.
       - name: Deploy to IIS staging
         shell: cmd
         run: |
@@ -149,9 +167,11 @@ jobs:
           if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
 
           echo Deployment in progress>"%DEST%\app_offline.htm"
+          if errorlevel 1 exit /b 1
           timeout /t 3 /nobreak >nul
 
           echo Deployment in progress>"%SOURCE%\app_offline.htm"
+          if errorlevel 1 exit /b 1
 
           robocopy "%SOURCE%" "%DEST%" /MIR /COPY:DAT /R:2 /W:2
           set "RC=%ERRORLEVEL%"
@@ -165,17 +185,19 @@ jobs:
           if not exist "%DEST%\CiCdDemo.Api.dll" exit /b 1
           if not exist "%DEST%\CiCdDemo.Api.deps.json" exit /b 1
 
-          if exist "%SOURCE%\app_offline.htm" del /q "%SOURCE%\app_offline.htm"
-          if exist "%DEST%\app_offline.htm" del /q "%DEST%\app_offline.htm"
-
-          if exist "%DEST%\app_offline.htm" (
-            echo Could not remove app_offline.htm.
+          if not exist "%DEST%\app_offline.htm" (
+            echo Expected offline marker is missing before deployment cleanup.
             exit /b 1
           )
 
+          del /q "%SOURCE%\app_offline.htm"
+          if exist "%SOURCE%\app_offline.htm" exit /b 1
+
+          del /q "%DEST%\app_offline.htm"
+          if exist "%DEST%\app_offline.htm" exit /b 1
+
           echo IIS staging files deployed.
 
-      # Check that the deployed application responds.
       - name: Verify IIS staging health and version
         shell: cmd
         run: |
@@ -214,37 +236,148 @@ jobs:
           echo.
           echo IIS staging health and version checks passed.
 
-      # Restore the previous staging files if a deployment or verification step fails.
       - name: Roll back staging after failure
         if: ${{ failure() && steps.backup.outcome == 'success' }}
         shell: cmd
         run: |
           set "DEST=C:\inetpub\DevOpsApi-Staging"
-          set "BACKUP=%RUNNER_TEMP%\CiCdDemo-Staging-Backup-${{ github.run_id }}"
+          set "BACKUP_ROOT=C:\inetpub\DevOpsApi-Staging-Backups"
+          set "BACKUP=%BACKUP_ROOT%\CiCdDemo-Staging-Backup-${{ github.run_id }}"
+          set "RESTORE=%RUNNER_TEMP%\CiCdDemo-Restore-${{ github.run_id }}"
 
           if not exist "%BACKUP%\CiCdDemo.Api.dll" (
-            echo Backup files are missing. Manual recovery is required.
+            echo Permanent backup is missing. Manual recovery is required.
+            exit /b 1
+          )
+
+          if exist "%RESTORE%" rmdir /s /q "%RESTORE%"
+          mkdir "%RESTORE%"
+          if errorlevel 1 exit /b 1
+
+          robocopy "%BACKUP%" "%RESTORE%" /E /COPY:DAT /R:2 /W:2
+          set "RC=%ERRORLEVEL%"
+          echo Restore preparation robocopy exit code: %RC%
+
+          if %RC% GEQ 8 (
+            echo Could not prepare restore files.
+            exit /b 1
+          )
+
+          if not exist "%RESTORE%\CiCdDemo.Api.dll" (
+            echo Restore package verification failed.
+            exit /b 1
+          )
+
+          if not exist "%RESTORE%\web.config" (
+            echo Restore web.config verification failed.
             exit /b 1
           )
 
           echo Rollback in progress>"%DEST%\app_offline.htm"
+          if errorlevel 1 exit /b 1
+
+          echo Rollback in progress>"%RESTORE%\app_offline.htm"
+          if errorlevel 1 exit /b 1
+
           timeout /t 3 /nobreak >nul
 
-          robocopy "%BACKUP%" "%DEST%" /MIR /COPY:DAT /R:2 /W:2
+          robocopy "%RESTORE%" "%DEST%" /MIR /COPY:DAT /R:2 /W:2
           set "RC=%ERRORLEVEL%"
           echo Rollback robocopy exit code: %RC%
 
           if %RC% GEQ 8 (
-            echo Staging rollback failed. Manual recovery is required.
+            echo Rollback file synchronization failed.
+            echo Staging remains offline for manual inspection.
             exit /b 1
           )
 
-          if exist "%DEST%\app_offline.htm" del /q "%DEST%\app_offline.htm"
+          if not exist "%DEST%\CiCdDemo.Api.dll" (
+            echo Restored API DLL is missing. Staging remains offline.
+            exit /b 1
+          )
 
+          if not exist "%DEST%\web.config" (
+            echo Restored web.config is missing. Staging remains offline.
+            exit /b 1
+          )
+
+          if not exist "%DEST%\app_offline.htm" (
+            echo Rollback marker unexpectedly disappeared.
+            echo Inspect staging before continuing.
+            exit /b 1
+          )
+
+          del /q "%DEST%\app_offline.htm"
           if exist "%DEST%\app_offline.htm" (
-            echo Could not remove app_offline.htm after rollback.
+            echo Could not remove rollback marker.
             exit /b 1
           )
+
+          if exist "%RESTORE%" rmdir /s /q "%RESTORE%"
 
           echo Previous staging files restored.
-          echo Deployment remains failed; verify restored staging health manually.
+          echo Checking restored staging health...
+
+          curl.exe --retry 5 --retry-delay 2 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:5071/health"
+          if errorlevel 1 (
+            echo Restored staging health check failed.
+            exit /b 1
+          )
+
+          echo.
+          curl.exe --retry 5 --retry-delay 2 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:5071/version"
+          if errorlevel 1 (
+            echo Restored staging version check failed.
+            exit /b 1
+          )
+
+          echo.
+          echo Rollback completed and restored staging responds successfully.
+
+      - name: Retain latest 5 staging backups
+        if: success()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $backupRoot = 'C:\inetpub\DevOpsApi-Staging-Backups'
+
+          if (-not (Test-Path -LiteralPath $backupRoot -PathType Container)) {
+            throw "Permanent backup directory is missing: $backupRoot"
+          }
+
+          $backups = @(
+            Get-ChildItem -LiteralPath $backupRoot -Directory |
+              ForEach-Object {
+                if ($_.Name -match '^CiCdDemo-Staging-Backup-(\d+)$') {
+                  [PSCustomObject]@{
+                    Name = $_.Name
+                    FullName = $_.FullName
+                    RunId = [long]$Matches[1]
+                  }
+                }
+              } |
+              Sort-Object -Property RunId -Descending
+          )
+
+          Write-Host "Found $($backups.Count) valid staging backup directories."
+          Write-Host "Keeping the 5 newest backups by numeric GitHub Run ID."
+
+          if ($backups.Count -gt 5) {
+            $oldBackups = @($backups | Select-Object -Skip 5)
+
+            foreach ($backup in $oldBackups) {
+              Write-Host "Removing old backup: $($backup.Name)"
+              Remove-Item -LiteralPath $backup.FullName -Recurse -Force
+            }
+          }
+
+          $remaining = @(
+            Get-ChildItem -LiteralPath $backupRoot -Directory |
+              Where-Object { $_.Name -match '^CiCdDemo-Staging-Backup-\d+$' }
+          )
+
+          if ($remaining.Count -gt 5) {
+            throw "Retention verification failed: $($remaining.Count) matching backups remain."
+          }
+
+          Write-Host "Backup retention cleanup completed. Matching backups remaining: $($remaining.Count)"
