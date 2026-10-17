@@ -242,7 +242,10 @@ jobs:
 
           for ($attempt = 1; $attempt -le 6; $attempt++) {
             try {
-              $response = Invoke-WebRequest -Uri $healthUri -TimeoutSec 10
+              $response = Invoke-WebRequest `
+                -Uri $healthUri `
+                -TimeoutSec 10 `
+                -UseBasicParsing
 
               if ($response.StatusCode -eq 200 -and $response.Content.Trim() -eq 'Healthy') {
                 $healthy = $true
@@ -253,14 +256,18 @@ jobs:
               Write-Host "Health attempt $attempt failed: $($_.Exception.Message)"
             }
 
-            Start-Sleep -Seconds 5
+            if (-not $healthy -and $attempt -lt 6) {
+              Start-Sleep -Seconds 5
+            }
           }
 
           if (-not $healthy) {
             throw "Staging health check failed: $healthUri"
           }
 
-          $version = Invoke-RestMethod -Uri $versionUri -TimeoutSec 10
+          $version = Invoke-RestMethod `
+            -Uri $versionUri `
+            -TimeoutSec 10
 
           if ([string]::IsNullOrWhiteSpace([string]$version.version)) {
             throw 'Staging version endpoint did not return a version value.'
@@ -342,13 +349,18 @@ jobs:
 
           Remove-Item -LiteralPath $restorePath -Recurse -Force
 
-          $health = Invoke-WebRequest -Uri "$env:STAGING_URL/health" -TimeoutSec 15
+          $health = Invoke-WebRequest `
+            -Uri "$env:STAGING_URL/health" `
+            -TimeoutSec 15 `
+            -UseBasicParsing
 
           if ($health.StatusCode -ne 200 -or $health.Content.Trim() -ne 'Healthy') {
             throw 'Rollback completed but staging health verification failed.'
           }
 
-          $version = Invoke-RestMethod -Uri "$env:STAGING_URL/version" -TimeoutSec 15
+          $version = Invoke-RestMethod `
+            -Uri "$env:STAGING_URL/version" `
+            -TimeoutSec 15
 
           Write-Host 'Rollback completed and staging health is Healthy.'
           Write-Host "Restored version: $($version.version)"
