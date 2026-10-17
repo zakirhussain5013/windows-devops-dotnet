@@ -38,7 +38,7 @@ jobs:
     env:
       STAGING_PATH: C:\inetpub\DevOpsApi-Staging
       BACKUP_ROOT: C:\inetpub\DevOpsApi-Staging-Backups
-      STAGING_URL: http://127.0.0.1:5071
+      STAGING_URL: http://127.0.0.1:5077
 
     steps:
       - name: Checkout repository for manual deployment
